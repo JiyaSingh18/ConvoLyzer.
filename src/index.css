@@ -1,0 +1,199 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Default theme colors */
+  --primary-color: theme('colors.retro.blue');
+  --accent-color: theme('colors.blue.500');
+  --primary-hover: theme('colors.blue.600');
+  --primary-glow: rgba(59, 130, 246, 0.5);
+  --text-on-primary: theme('colors.white');
+  
+  /* Font sizes */
+  --font-size-base: 1rem;
+}
+
+/* Color schemes */
+[data-color='blue'] {
+  --primary-color: theme('colors.retro.blue');
+  --accent-color: theme('colors.blue.500');
+  --primary-hover: theme('colors.blue.600');
+  --primary-glow: rgba(59, 130, 246, 0.5);
+  --text-on-primary: theme('colors.white');
+}
+
+[data-color='pink'] {
+  --primary-color: theme('colors.retro.pink');
+  --accent-color: theme('colors.pink.500');
+  --primary-hover: theme('colors.pink.600');
+  --primary-glow: rgba(236, 72, 153, 0.5);
+  --text-on-primary: theme('colors.white');
+}
+
+[data-color='yellow'] {
+  --primary-color: theme('colors.retro.yellow');
+  --accent-color: theme('colors.yellow.500');
+  --primary-hover: theme('colors.yellow.600');
+  --primary-glow: rgba(234, 179, 8, 0.5);
+  --text-on-primary: theme('colors.black');
+}
+
+/* Font sizes */
+[data-font-size='small'] {
+  --font-size-base: 0.875rem;
+}
+
+[data-font-size='medium'] {
+  --font-size-base: 1rem;
+}
+
+[data-font-size='large'] {
+  --font-size-base: 1.125rem;
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+    font-size: var(--font-size-base);
+  }
+  
+  h1, h2, h3 {
+    font-family: 'Press Start 2P', cursive;
+  }
+
+  /* Dark mode body background */
+  .dark body {
+    @apply bg-gray-950;
+  }
+}
+
+@layer components {
+  .retro-button {
+    @apply font-bold py-3 px-6 rounded-lg 
+           transform hover:-translate-y-1 transition-all duration-200
+           shadow-[4px_4px_0_0_rgba(0,0,0,1)]
+           hover:shadow-[2px_2px_0_0_rgba(0,0,0,1)]
+           active:shadow-none active:translate-y-0
+           border-4 border-black;
+    background-color: var(--primary-color);
+    color: var(--text-on-primary);
+  }
+
+  .retro-button:hover {
+    background-color: var(--primary-hover);
+    border-color: var(--accent-color);
+  }
+  
+  .retro-card {
+    @apply bg-white p-6 rounded-lg border-4
+           shadow-[8px_8px_0_0_rgba(0,0,0,1)]
+           hover:shadow-[4px_4px_0_0_rgba(0,0,0,1)]
+           transition-all duration-200;
+    border-color: var(--primary-color);
+  }
+
+  .retro-card:hover {
+    box-shadow: 4px 4px 0 0 var(--primary-glow);
+  }
+
+  /* Dark mode overrides with darker colors */
+  .dark .retro-card {
+    @apply bg-gray-900 text-gray-100;
+    border-color: var(--primary-color);
+    box-shadow: 8px 8px 0 0 var(--primary-glow);
+  }
+
+  .dark .retro-button {
+    @apply bg-gray-800 text-gray-100 border-gray-700
+           shadow-[4px_4px_0_0_rgba(0,0,0,0.7)]
+           hover:bg-gray-700 active:bg-gray-600;
+    border-color: var(--primary-color);
+  }
+
+  .dark .retro-button:hover {
+    box-shadow: 4px 4px 0 0 var(--primary-glow);
+  }
+
+  .dark .retro-input {
+    @apply bg-gray-800 text-gray-100;
+    border-color: var(--primary-color);
+  }
+
+  .dark select.retro-input option {
+    @apply bg-gray-800 text-gray-100;
+  }
+  
+  .retro-input {
+    @apply border-4 rounded-lg px-4 py-2
+           focus:outline-none transition-colors duration-200;
+    border-color: var(--primary-color);
+  }
+
+  .retro-input:focus {
+    box-shadow: 0 0 0 2px var(--primary-glow);
+  }
+
+  /* Toggle switch customization */
+  .toggle-switch-active {
+    background-color: var(--primary-color);
+  }
+
+  .toggle-switch-active .toggle-switch-handle {
+    border-color: var(--primary-color);
+  }
+
+  /* Dynamic text sizes */
+  .text-dynamic {
+    font-size: var(--font-size-base);
+  }
+
+  .text-dynamic-lg {
+    font-size: calc(var(--font-size-base) * 1.25);
+  }
+
+  .text-dynamic-xl {
+    font-size: calc(var(--font-size-base) * 1.5);
+  }
+
+  /* Accent text color */
+  .text-accent {
+    color: var(--primary-color);
+  }
+
+  /* Dark mode text colors */
+  .dark .text-gray-200 {
+    @apply text-gray-100;
+  }
+
+  .dark .text-gray-600 {
+    @apply text-gray-500;
+  }
+
+  /* Active navigation indicator */
+  .nav-link.active {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+  }
+
+  /* Selection color */
+  ::selection {
+    background-color: var(--primary-glow);
+    color: var(--text-on-primary);
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}

@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+  
+  h1, h2, h3 {
+    font-family: 'Press Start 2P', cursive;
+  }
+}
+
+@layer components {
+  .retro-button {
+    @apply bg-yellow-400 text-black font-bold py-3 px-6 rounded-lg 
+           transform hover:-translate-y-1 transition-all duration-200
+           shadow-[4px_4px_0_0_rgba(0,0,0,1)]
+           hover:shadow-[2px_2px_0_0_rgba(0,0,0,1)]
+           active:shadow-none active:translate-y-0
+           border-4 border-black hover:border-pink-500;
+  }
+  
+  .retro-card {
+    @apply bg-white p-6 rounded-lg border-4 border-black
+           shadow-[8px_8px_0_0_rgba(0,0,0,1)]
+           hover:shadow-[4px_4px_0_0_rgba(0,0,0,1)]
+           transition-all duration-200
+           hover:border-pink-500;
+  }
+  
+  .retro-input {
+    @apply border-4 border-black rounded-lg px-4 py-2
+           focus:outline-none focus:border-blue-500
+           transition-colors duration-200;
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}

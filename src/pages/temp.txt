@@ -1,0 +1,993 @@
+﻿import React, { useState, useRef } from 'react';
+import axios from 'axios';
+import { User, Brain, AlertTriangle, Mic, StopCircle, Send, Loader, Loader2, Sparkles, MessageSquare } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+
+// Add TypeScript declarations for Web Speech API
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition;
+    webkitSpeechRecognition: new () => SpeechRecognition;
+  }
+}
+
+interface Question {
+  question: string;
+  purpose: string;
+  follow_ups: string[];
+}
+
+interface InterviewSession {
+  currentQuestion: Question | null;
+  remainingQuestions: Question[];
+  answers: Array<{ 
+    question: Question; 
+    answer: string;
+    analysis?: {
+      strengths: string[];
+      areas_for_improvement: string[];
+      score: number;
+      feedback: string;
+    }
+  }>;
+  analysis: any | null;
+  totalQuestions: number;
+  recordedQuestions: string[];
+}
+
+// Add these interview guidelines at the top of the file after the imports
+const INTERVIEW_GUIDELINES = {
+  technical: {
+    guidelines: [
+      {
+        purpose: "Assess technical knowledge and problem-solving abilities. Focus on their understanding of core concepts and practical experience.",
+        follow_ups: [
+          "Can you explain how you've implemented this in a real project?",
+          "What challenges did you face and how did you overcome them?",
+          "Can you think of alternative approaches?"
+        ]
+      },
+      {
+        purpose: "Evaluate system design and architecture skills. Look for scalability, reliability, and maintainability considerations.",
+        follow_ups: [
+          "How would this solution scale with increased load?",
+          "What are the potential bottlenecks?",
+          "How would you handle failure scenarios?"
+        ]
+      },
+      {
+        purpose: "Explore coding best practices and quality standards. Focus on code organization, testing, and documentation.",
+        follow_ups: [
+          "How would you test this solution?",
+          "What documentation would you provide?",
+          "How would you ensure code maintainability?"
+        ]
+      }
+    ]
+  },
+  behavioral: {
+    guidelines: [
+      {
+        purpose: "Assess teamwork and collaboration abilities. Look for examples of effective communication and conflict resolution.",
+        follow_ups: [
+          "How did you handle disagreements within the team?",
+          "What was your role in the project?",
+          "What would you do differently next time?"
+        ]
+      },
+      {
+        purpose: "Evaluate leadership and initiative. Focus on project ownership and decision-making abilities.",
+        follow_ups: [
+          "How did you influence the team's decision?",
+          "What was the impact of your initiative?",
+          "How did you measure success?"
+        ]
+      },
+      {
+        purpose: "Explore problem-solving approach in challenging situations. Look for analytical thinking and resilience.",
+        follow_ups: [
+          "What alternatives did you consider?",
+          "How did you handle setbacks?",
+          "What did you learn from this experience?"
+        ]
+      }
+    ]
+  },
+  system_design: {
+    guidelines: [
+      {
+        purpose: "Assess system architecture knowledge. Focus on component design and integration strategies.",
+        follow_ups: [
+          "How would you handle data consistency?",
+          "What caching strategies would you implement?",
+          "How would you monitor system health?"
+        ]
+      },
+      {
+        purpose: "Evaluate scalability considerations. Look for understanding of distributed systems concepts.",
+        follow_ups: [
+          "How would you handle increased traffic?",
+          "What's your approach to data partitioning?",
+          "How would you ensure high availability?"
+        ]
+      },
+      {
+        purpose: "Explore security and performance optimization. Focus on best practices and trade-offs.",
+        follow_ups: [
+          "What security measures would you implement?",
+          "How would you optimize performance?",
+          "What monitoring metrics would you track?"
+        ]
+      }
+    ]
+  },
+  leadership: {
+    guidelines: [
+      {
+        purpose: "Assess team management and mentorship abilities. Look for examples of team growth and development.",
+        follow_ups: [
+          "How do you handle underperforming team members?",
+          "How do you foster team growth?",
+          "What's your approach to giving feedback?"
+        ]
+      },
+      {
+        purpose: "Evaluate strategic thinking and vision. Focus on long-term planning and execution.",
+        follow_ups: [
+          "How do you align team goals with company objectives?",
+          "How do you handle competing priorities?",
+          "How do you measure team success?"
+        ]
+      },
+      {
+        purpose: "Explore stakeholder management. Look for communication and negotiation skills.",
+        follow_ups: [
+          "How do you handle difficult stakeholders?",
+          "How do you manage expectations?",
+          "How do you build trust with stakeholders?"
+        ]
+      }
+    ]
+  }
+};
+
+const InterviewPractice: React.FC = () => {
+  // Form states
+  const [topic, setTopic] = useState('');
+  const [interviewee, setInterviewee] = useState('');
+  const [mode, setMode] = useState('technical');
+  const [numQuestions, setNumQuestions] = useState(3);
+  const [interviewMode, setInterviewMode] = useState<'give' | 'take'>('give');
+  const [showSettings, setShowSettings] = useState(true);
+
+  // Session states
+  const [session, setSession] = useState<InterviewSession | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [isComplete, setIsComplete] = useState(false);
+  const [showInterview, setShowInterview] = useState(false);
+
+  // Recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [currentAnswer, setCurrentAnswer] = useState('');
+  const [transcription, setTranscription] = useState('');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const handleTranscriptionError = (error: any) => {
+    console.error('Transcription error:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+    
+    const errorMessage = error.response?.data?.message || error.message;
+    setError(`Transcription failed: ${errorMessage}`);
+    
+    // If it's a configuration error, stop recording
+    if (error.response?.status === 500 && error.response?.data?.message?.includes('not properly configured')) {
+      mediaRecorderRef.current?.stop();
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Initialize Web Speech API
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      
+      recognition.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join(' ');
+        setTranscription(transcript);
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        setError(`Speech recognition error: ${event.error}`);
+      };
+
+      recognition.onend = () => {
+        if (isRecording) {
+          recognition.start();
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+      
+      // Keep MediaRecorder for audio backup
+      const mediaRecorder = new MediaRecorder(stream);
+      const audioChunks: Blob[] = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        // Store audio for potential later use or analysis
+        console.log('Recording stopped, audio saved');
+      };
+
+      mediaRecorder.start(1000);
+      mediaRecorderRef.current = mediaRecorder;
+      setIsRecording(true);
+      setCurrentAnswer('Recording...');
+    } catch (err) {
+      console.error('Error starting recording:', err);
+      setError(`Failed to start recording: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  const stopRecording = async () => {
+    try {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+      setIsRecording(false);
+    } catch (err) {
+      console.error('Error stopping recording:', err);
+      setError(`Failed to stop recording: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  const startInterview = async () => {
+    setIsLoading(true);
+    setError(null);
+    setIsComplete(false);
+    setShowAnalysis(false);
+    setCurrentAnswer('');
+
+    try {
+      console.log('Starting interview with mode:', interviewMode, 'on topic:', topic, 'with', numQuestions, 'questions');
+
+      // Get interview questions from the API based on mode
+      const response = await axios.post('/api/generate-questions', {
+        topic,
+        interviewee,
+        mode: interviewMode,
+        numQuestions: parseInt(numQuestions, 10), // Ensure numQuestions is sent as a number
+        context: `This is a ${interviewMode} interview. Generate exactly ${numQuestions} questions appropriate for this format.`
+      });
+      
+      // Validate the response structure
+      if (!response.data?.interview_questions?.opening_questions || 
+          !Array.isArray(response.data.interview_questions.opening_questions) ||
+          response.data.interview_questions.opening_questions.length === 0) {
+        throw new Error('Invalid response format from question generator');
+      }
+
+      const questions = response.data.interview_questions.opening_questions;
+      console.log('Generated questions:', questions);
+
+      if (questions.length === 0) {
+        throw new Error('No questions were generated. Please try again.');
+      }
+
+      // Log warning if fewer questions than requested were received
+      if (questions.length < parseInt(numQuestions, 10)) {
+        console.warn(`Expected ${numQuestions} questions but only received ${questions.length}. Proceeding with available questions.`);
+      }
+
+      // Create the initial session object based on interview mode
+      if (interviewMode === 'give') {
+        // Interviewee mode - user answers questions
+        setSession({
+          currentQuestion: questions[0] || null,
+          remainingQuestions: questions.slice(1),
+          answers: [],
+          analysis: null,
+          totalQuestions: questions.length,
+          recordedQuestions: [] // Not used in interviewee mode
+        });
+        
+        console.log('Initialized interviewee session with first question:', questions[0]?.question);
+      } else {
+        // Interviewer mode - user asks questions
+        setSession({
+          currentQuestion: questions[0], // First question as reference/example for interviewer
+          remainingQuestions: questions.slice(1), // Rest of questions as reference
+          answers: [], // Not used in interviewer mode
+          analysis: null,
+          totalQuestions: parseInt(numQuestions, 10), // Use the selected number of questions
+          recordedQuestions: [] // Will store user's questions
+        });
+        
+        console.log('Initialized interviewer session for', numQuestions, 'questions');
+      }
+
+      // Start interview and hide settings
+      setShowSettings(false);
+      setShowInterview(true);
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response) {
+        // Display the specific error message from the server if available
+        setError(`Failed to generate interview questions: ${error.response.data?.message || error.message}`);
+      } else {
+        setError(`Failed to generate interview questions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleNextQuestion = async () => {
+    if (!session) {
+      console.error('No active session');
+      return;
+    }
+    
+    if (!currentAnswer) {
+      setError('Please record an answer before continuing.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Stop any ongoing recording
+      if (isRecording) {
+        await stopRecording();
+      }
+
+      // Save current answer/question based on mode
+      if (interviewMode === 'give') {
+        // In interviewee mode, save the answer to the current question
+        if (session.currentQuestion) {
+          const updatedAnswers = [
+            ...session.answers, 
+            { 
+              question: session.currentQuestion, 
+              answer: currentAnswer 
+            }
+          ];
+          
+          // Check if there are more questions
+          if (session.remainingQuestions.length > 0) {
+            // Still have questions, move to the next one
+            setSession({
+              ...session,
+              currentQuestion: session.remainingQuestions[0],
+              remainingQuestions: session.remainingQuestions.slice(1),
+              answers: updatedAnswers
+            });
+            setCurrentAnswer('');
+          } else {
+            // No more questions, complete the interview
+            setSession({
+              ...session,
+              currentQuestion: null,
+              answers: updatedAnswers,
+            });
+            setIsComplete(true);
+            setShowAnalysis(true);
+          }
+        }
+      } else {
+        // In interviewer mode (take/ask), save the recorded question
+        const updatedQuestions = [...(session.recordedQuestions || []), currentAnswer.trim()];
+        const totalAsked = updatedQuestions.length;
+        
+        if (totalAsked >= session.totalQuestions) {
+          // All questions asked, complete the interview
+          setSession({
+            ...session,
+            recordedQuestions: updatedQuestions,
+          });
+          setIsComplete(true);
+          setShowAnalysis(true);
+        } else {
+          // Still need to ask more questions
+          setSession({
+            ...session,
+            recordedQuestions: updatedQuestions,
+          });
+          setCurrentAnswer('');
+        }
+      }
+    } catch (error) {
+      console.error('Error during question transition:', error);
+      setError('An error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAnalyzeInterview = async () => {
+    if (!session) {
+      setError('No active session to analyze');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Prepare data for analysis based on mode
+      let dataToAnalyze;
+      
+      if (interviewMode === 'give') {
+        // Interviewee mode: analyze answers to predefined questions
+        dataToAnalyze = {
+          answers: session.answers,
+          topic,
+          interviewee,
+          mode: interviewMode
+        };
+      } else {
+        // Interviewer mode: analyze questions asked by the user
+        dataToAnalyze = {
+          questions: session.recordedQuestions,
+          expectedQuestions: session.remainingQuestions, // The AI-generated questions as reference
+          topic,
+          interviewee,
+          mode: interviewMode
+        };
+      }
+
+      console.log('Sending for analysis:', dataToAnalyze);
+      
+      const response = await axios.post('/api/analyze-interview', dataToAnalyze);
+      
+      // Update session with analysis results
+      setSession({
+        ...session,
+        analysis: response.data
+      });
+
+    } catch (error) {
+      console.error('Error analyzing interview:', error);
+      if (axios.isAxiosError(error) && error.response) {
+        setError(`Analysis failed: ${error.response.data?.message || error.message}`);
+      } else {
+        setError(`Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Helper function to generate suggested rephrasing
+  const generateSuggestedRephrasing = (question: string, mode: string): string => {
+    const words = question.split(' ');
+    if (mode === 'technical') {
+      return `Could you explain how you would implement ${words.slice(1).join(' ')}? Walk me through your approach and any considerations.`;
+    } else if (mode === 'behavioral') {
+      return `Can you tell me about a specific situation where you ${words.slice(1).join(' ')}? What was your role and what was the outcome?`;
+    } else if (mode === 'system_design') {
+      return `How would you design a system that ${words.slice(1).join(' ')}? Consider scalability, reliability, and performance requirements.`;
+    } else {
+      return `Could you describe a time when you had to ${words.slice(1).join(' ')}? What was your approach and what were the results?`;
+    }
+  };
+
+  // Helper function to generate action items
+  const generateActionItems = (mode: string, scores: any): string[] => {
+    const items = [];
+    if (scores.communication_clarity < 0.7) {
+      items.push("Focus on asking more clearly structured questions");
+      items.push("Practice formulating concise and specific questions");
+    }
+    if (scores.knowledge_depth < 0.7) {
+      items.push("Incorporate more technical depth in your questions");
+      items.push("Add follow-up questions to probe deeper understanding");
+    }
+    if (scores.problem_solving < 0.7) {
+      items.push("Include more scenario-based questions");
+      items.push("Add questions that assess practical problem-solving abilities");
+    }
+    return items.slice(0, 3);
+  };
+
+  // Helper function to generate preparation tips
+  const generatePreparationTips = (mode: string, scores: any): string[] => {
+    const tips = [];
+    if (mode === 'technical') {
+      tips.push("Research common technical challenges in the role");
+      tips.push("Prepare a mix of implementation and design questions");
+    } else if (mode === 'behavioral') {
+      tips.push("Study the STAR method for behavioral questions");
+      tips.push("Prepare situation-specific follow-up questions");
+    } else if (mode === 'system_design') {
+      tips.push("Review system design patterns and best practices");
+      tips.push("Prepare scalability and performance scenarios");
+    } else {
+      tips.push("Research leadership frameworks and methodologies");
+      tips.push("Prepare team management scenarios");
+    }
+    return tips;
+  };
+
+  // Update the analysis results rendering to include per-question analysis
+  const renderAnalysisResults = () => {
+    if (!session?.analysis) {
+      return <div className="text-center py-8">No analysis available.</div>;
+    }
+
+    const analysis = session.analysis;
+    console.log('Rendering analysis:', analysis);
+
+    // Check if we have the expected fields
+    if (!analysis.overall_assessment || !analysis.recommendations) {
+      console.error('Missing required analysis fields:', analysis);
+      return (
+        <div className="text-center py-8">
+          Analysis data is incomplete or in an unexpected format.
+          <pre className="mt-4 text-left text-xs bg-gray-800 p-4 rounded overflow-auto max-h-60">
+            {JSON.stringify(analysis, null, 2)}
+          </pre>
+        </div>
+      );
+    }
+
+    // Extract data for display
+    const {
+      overall_assessment,
+      recommendations,
+      technical_evaluation,
+      question_by_question_feedback = [] // Ensure this field is extracted
+    } = analysis;
+
+    console.log("Question feedback array:", question_by_question_feedback); // Log the feedback to help debug
+
+    // Generate fallback question feedback if it's missing
+    const questionFeedback = question_by_question_feedback && question_by_question_feedback.length > 0 
+      ? question_by_question_feedback 
+      : session.answers.map((answer, index) => ({
+          question: answer.question?.question || `Question ${index + 1}`,
+          feedback: "No detailed feedback available for this question.",
+          strengths: [],
+          areas_for_improvement: []
+        }));
+
+    console.log("Final question feedback for display:", questionFeedback); // Log the feedback to help debug
+
+    return (
+      <div className="space-y-8">
+        <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+          <h3 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">Overall Assessment</h3>
+          <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+            {overall_assessment.summary || "Analysis summary not available"}
+          </p>
+          
+          {overall_assessment.impact_assessment && (
+            <div className="mt-4 border-t pt-4">
+              <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Impact Assessment</h4>
+              <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                {overall_assessment.impact_assessment}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+            <h3 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">Strengths</h3>
+            <ul className="list-disc pl-5 space-y-3">
+              {overall_assessment.strengths && overall_assessment.strengths.length > 0 ? (
+                overall_assessment.strengths.map((strength, i) => (
+                  <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{strength}</li>
+                ))
+              ) : (
+                <li className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">No specific strengths identified</li>
+              )}
+            </ul>
+          </div>
+          
+          <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+            <h3 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">Areas for Improvement</h3>
+            <ul className="list-disc pl-5 space-y-3">
+              {overall_assessment.areas_for_improvement && overall_assessment.areas_for_improvement.length > 0 ? (
+                overall_assessment.areas_for_improvement.map((area, i) => (
+                  <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{area}</li>
+                ))
+              ) : (
+                <li className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">No specific areas for improvement identified</li>
+              )}
+            </ul>
+          </div>
+        </div>
+        
+        <div>
+          <h3 className="text-xl font-bold mb-6 hover:scale-105 transition-transform cursor-default">Technical Evaluation</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {interviewMode === 'give' ? (
+              <>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-blue-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.knowledge_depth || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Knowledge</div>
+                </div>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-purple-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.communication_clarity || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Communication</div>
+                </div>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-green-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.problem_solving || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Problem Solving</div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-blue-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.questioning_technique || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Questioning</div>
+                </div>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-purple-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.listening_skills || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Listening</div>
+                </div>
+                <div className="retro-card p-8 text-center hover:scale-[1.02] transition-all">
+                  <div className="text-3xl font-bold text-green-500 mb-2 hover:scale-105 transition-transform cursor-default">
+                    {Math.round((technical_evaluation?.adaptability || 0) * 100)}%
+                  </div>
+                  <div className="text-sm font-bold hover:scale-105 transition-transform cursor-default">Adaptability</div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Display additional technical evaluation details */}
+          {interviewMode === 'give' && (
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-1 gap-6">
+              {technical_evaluation?.evidence_provided && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Evidence Provided</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.evidence_provided}
+                  </p>
+                </div>
+              )}
+              {technical_evaluation?.technical_accuracy && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Technical Accuracy</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.technical_accuracy}
+                  </p>
+                </div>
+              )}
+              {technical_evaluation?.relevance_of_examples && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Relevance of Examples</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.relevance_of_examples}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Display interviewer-specific technical evaluation details */}
+          {interviewMode !== 'give' && (
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-1 gap-6">
+              {technical_evaluation?.question_structure && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Question Structure</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.question_structure}
+                  </p>
+                </div>
+              )}
+              {technical_evaluation?.question_progression && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Question Progression</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.question_progression}
+                  </p>
+                </div>
+              )}
+              {technical_evaluation?.question_relevance && (
+                <div className="retro-card p-6 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-2 hover:scale-105 transition-transform cursor-default">Question Relevance</h4>
+                  <p className="leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                    {technical_evaluation.question_relevance}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        
+        {questionFeedback && questionFeedback.length > 0 && (
+          <div>
+            <h3 className="text-xl font-bold mb-6 hover:scale-105 transition-transform cursor-default">Question-by-Question Analysis</h3>
+            <div className="space-y-6">
+              {questionFeedback.map((item, index) => (
+                <div key={index} className="retro-card p-8 hover:scale-[1.02] transition-all">
+                  <h4 className="text-lg font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                    {item.question}
+                  </h4>
+                  <p className="text-lg mb-4 hover:scale-[1.01] transition-transform cursor-default">{item.feedback}</p>
+                  
+                  {item.strengths && item.strengths.length > 0 && (
+                    <div className="mb-4">
+                      <h5 className="font-bold mb-2 hover:scale-105 transition-transform cursor-default">Strengths:</h5>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {item.strengths.map((strength, idx) => (
+                          <li key={idx} className="hover:scale-[1.01] transition-transform cursor-default">{strength}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  
+                  {item.areas_for_improvement && item.areas_for_improvement.length > 0 && (
+                    <div className="mb-4">
+                      <h5 className="font-bold mb-2 hover:scale-105 transition-transform cursor-default">Areas for Improvement:</h5>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {item.areas_for_improvement.map((area, idx) => (
+                          <li key={idx} className="hover:scale-[1.01] transition-transform cursor-default">{area}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {item.ideal_response_structure && (
+                    <div className="mb-4">
+                      <h5 className="font-bold mb-2 hover:scale-105 transition-transform cursor-default">Ideal Response Structure:</h5>
+                      <p className="px-3 py-2 bg-gray-100 rounded hover:scale-[1.01] transition-transform cursor-default">
+                        {item.ideal_response_structure}
+                      </p>
+                    </div>
+                  )}
+
+                  {item.suggested_talking_points && item.suggested_talking_points.length > 0 && (
+                    <div>
+                      <h5 className="font-bold mb-2 hover:scale-105 transition-transform cursor-default">Suggested Talking Points:</h5>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {item.suggested_talking_points.map((point, idx) => (
+                          <li key={idx} className="hover:scale-[1.01] transition-transform cursor-default">{point}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <h3 className="text-xl font-bold mb-6 hover:scale-105 transition-transform cursor-default">Recommendations</h3>
+          <div className="space-y-8">
+            <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+              <h4 className="text-lg font-bold mb-4 hover:scale-105 transition-transform cursor-default">Key Action Items</h4>
+              <ul className="list-disc pl-5 space-y-3">
+                {recommendations.key_action_items && recommendations.key_action_items.length > 0 ? (
+                  recommendations.key_action_items.map((item, i) => (
+                    <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{item}</li>
+                  ))
+                ) : (
+                  <li className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">No specific action items available</li>
+                )}
+              </ul>
+            </div>
+            <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+              <h4 className="text-lg font-bold mb-4 hover:scale-105 transition-transform cursor-default">Preparation Tips</h4>
+              <ul className="list-disc pl-5 space-y-3">
+                {recommendations.preparation_tips && recommendations.preparation_tips.length > 0 ? (
+                  recommendations.preparation_tips.map((tip, i) => (
+                    <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{tip}</li>
+                  ))
+                ) : (
+                  <li className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">No specific preparation tips available</li>
+                )}
+              </ul>
+            </div>
+
+            {recommendations.follow_up_practice && recommendations.follow_up_practice.length > 0 && (
+              <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+                <h4 className="text-lg font-bold mb-4 hover:scale-105 transition-transform cursor-default">Practice Exercises</h4>
+                <ul className="list-disc pl-5 space-y-3">
+                  {recommendations.follow_up_practice.map((exercise, i) => (
+                    <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{exercise}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {recommendations.resources && recommendations.resources.length > 0 && (
+              <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+                <h4 className="text-lg font-bold mb-4 hover:scale-105 transition-transform cursor-default">Recommended Resources</h4>
+                <ul className="list-disc pl-5 space-y-3">
+                  {recommendations.resources.map((resource, i) => (
+                    <li key={i} className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">{resource}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 py-12">
+      <div className="max-w-6xl mx-auto px-4">
+        <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-500 to-purple-500 bg-clip-text text-transparent mb-12 text-center hover:scale-105 transition-transform cursor-default">
+          Interview Practice
+        </h1>
+
+        {error && (
+          <div className="retro-card mb-8 p-6 hover:scale-[1.02] transition-all">
+            <div className="flex items-center text-red-500">
+              <AlertTriangle className="w-5 h-5 mr-2" />
+              <p className="text-sm">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {showSettings ? (
+          <div className="retro-card mb-8 p-8 hover:scale-[1.01] transition-all">
+            <form onSubmit={(e) => { e.preventDefault(); startInterview(); }}>
+              <div className="mb-8">
+                <h3 className="text-2xl font-bold mb-6 flex items-center hover:scale-105 transition-transform cursor-default">
+                  <Sparkles className="mr-2" />
+                  Choose Your Role
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <button
+                    type="button"
+                    onClick={() => setInterviewMode('give')}
+                    className={`retro-card p-10 text-center transition-all hover:scale-105 ${
+                      interviewMode === 'give' 
+                        ? 'border-blue-500 bg-gradient-to-b from-blue-500/20 to-blue-500/5 shadow-lg shadow-blue-500/30 scale-105 ring-2 ring-blue-500' 
+                        : 'border-gray-200 hover:border-blue-500/50 hover:shadow-xl hover:bg-blue-500/5'
+                    }`}
+                  >
+                    <User className={`w-16 h-16 mb-4 mx-auto transition-colors ${
+                      interviewMode === 'give' ? 'text-blue-300' : 'text-blue-500'
+                    }`} />
+                    <h3 className={`text-xl font-bold mb-3 transition-colors ${
+                      interviewMode === 'give' ? 'text-blue-300' : ''
+                    }`}>Practice as Interviewee</h3>
+                    <p className={`text-sm transition-colors ${
+                      interviewMode === 'give' ? 'text-blue-300/80' : 'text-gray-600'
+                    }`}>
+                      Answer questions and get feedback on your interview performance
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setInterviewMode('take')}
+                    className={`retro-card p-10 text-center transition-all hover:scale-105 ${
+                      interviewMode === 'take' 
+                        ? 'border-purple-500 bg-gradient-to-b from-purple-500/20 to-purple-500/5 shadow-lg shadow-purple-500/30 scale-105 ring-2 ring-purple-500' 
+                        : 'border-gray-200 hover:border-purple-500/50 hover:shadow-xl hover:bg-purple-500/5'
+                    }`}
+                  >
+                    <Brain className={`w-16 h-16 mb-4 mx-auto transition-colors ${
+                      interviewMode === 'take' ? 'text-purple-300' : 'text-purple-500'
+                    }`} />
+                    <h3 className={`text-xl font-bold mb-3 transition-colors ${
+                      interviewMode === 'take' ? 'text-purple-300' : ''
+                    }`}>Practice as Interviewer</h3>
+                    <p className={`text-sm transition-colors ${
+                      interviewMode === 'take' ? 'text-purple-300/80' : 'text-gray-600'
+                    }`}>
+                      Ask questions and get feedback on your interviewing skills
+                    </p>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        ) : null}
+
+        {showInterview && (
+          <div className="retro-card mb-8 p-8 hover:scale-[1.01] transition-all">
+            <h3 className="text-2xl font-bold mb-6 flex items-center hover:scale-105 transition-transform cursor-default">
+              <Sparkles className="mr-2" />
+              Interview Session</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+                <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                  Current Question
+                </h4>
+                <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                  {session?.currentQuestion?.question || "No current question"}
+                </p>
+              </div>
+              <div className="retro-card p-8 hover:scale-[1.02] transition-all">
+                <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                  Remaining Questions
+                </h4>
+                <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                  {session?.remainingQuestions.length || "No remaining questions"}
+                </p>
+              </div>
+            </div>
+            <div className="mt-6">
+              <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                Current Answer
+              </h4>
+              <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                {currentAnswer}
+              </p>
+            </div>
+            <div className="mt-6">
+              <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                Transcription
+              </h4>
+              <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                {transcription}
+              </p>
+            </div>
+            <div className="mt-6">
+              <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                Recording
+              </h4>
+              <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                {isRecording ? "Recording..." : "Not recording"}
+              </p>
+            </div>
+            <div className="mt-6">
+              <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                Analysis
+              </h4>
+              <p className="text-lg leading-relaxed hover:scale-[1.01] transition-transform cursor-default">
+                {showAnalysis ? "Analysis available" : "No analysis available"}
+              </p>
+            </div>
+            <div className="mt-6">
+              <h4 className="text-xl font-bold mb-4 hover:scale-105 transition-transform cursor-default">
+                Analysis Results
+              </h4>
+              {showAnalysis ? renderAnalysisResults() : "No analysis results to display"}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default InterviewPractice;
+
